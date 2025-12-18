@@ -242,12 +242,12 @@ def main():
                             
                         cls_ids = [cls_id for _, cls_id, _ in cup_detections]
                         print(cls_ids)
-                        if 0 in cls_ids:
-                            server.send_empty()
-                        else:
-                            server.send_not_empty()
+                        # if 0 in cls_ids:
+                        #     server.send_empty()
+                        # else:
+                        #     server.send_not_empty()
                         
-                        # server.send_not_empty()
+                        server.send_not_empty()
                         
 
                     # Draw FPS
