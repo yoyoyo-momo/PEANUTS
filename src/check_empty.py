@@ -36,7 +36,7 @@ def find_rim_and_center(point_map: np.ndarray, bbox: List[float], rim_percentile
           - rim_points: list of absolute pixel coords [(x, y), ...]
     """
 
-    return None
+    # return None
 
     x1, y1, x2, y2 = map(int, bbox)
     h, w, _ = point_map.shape
@@ -90,7 +90,7 @@ def find_rim_and_center(point_map: np.ndarray, bbox: List[float], rim_percentile
     if 0 <= center_y < h and 0 <= center_x < w:
         center_xyz = point_map[center_y, center_x, :]
         cup_prefix = f"Cup #{cup_id}: " if cup_id > 0 else ""
-        print(f"{cup_prefix}Rim center pixel: ({center_x}, {center_y}), XYZ: ({center_xyz[0]:.2f}, {center_xyz[1]:.2f}, {center_xyz[2]:.2f}) mm")
+        # print(f"{cup_prefix}Rim center pixel: ({center_x}, {center_y}), XYZ: ({center_xyz[0]:.2f}, {center_xyz[1]:.2f}, {center_xyz[2]:.2f}) mm")
 
     return {
         "rim_z": rim_z,
@@ -101,7 +101,7 @@ def find_rim_and_center(point_map: np.ndarray, bbox: List[float], rim_percentile
 
 
 def is_cup_empty(point_map: np.ndarray, bbox: List[float], table_depth: float, 
-                 empty_threshold: float = 30.0, min_valid_ratio: float = 0.3, cup_id: int = 0) -> tuple:
+                 empty_threshold: float = 50.0, min_valid_ratio: float = 0.3, cup_id: int = 0) -> tuple:
     """
     Check if a cup is empty by finding the 3D center of the rim and sampling depth there.
     
@@ -162,19 +162,10 @@ def is_cup_empty(point_map: np.ndarray, bbox: List[float], table_depth: float,
         min_idx = np.unravel_index(np.argmin(distances), distances.shape)
         center_depth = float(bbox_region[min_idx[0], min_idx[1], 2])
         
-        # Convert to absolute pixel coords for reporting
-        # center_px_abs = (x1 + min_idx[1], y1 + min_idx[0])
-        # center_xyz_abs = point_map[center_px_abs[1], center_px_abs[0], :]
-        cup_prefix = f"Cup #{cup_id}: " if cup_id > 0 else ""
-        # print(f"{cup_prefix}Center pixel: ({center_px_abs[0]}, {center_px_abs[1]}), XYZ: ({center_xyz_abs[0]:.2f}, {center_xyz_abs[1]:.2f}, {center_xyz_abs[2]:.2f}) mm")
-        
         # Empty cup: center depth close to table depth
         # Full cup: center depth significantly < table depth
         depth_diff = table_depth - center_depth
         is_empty = depth_diff < empty_threshold
-        
-        print(f"{cup_prefix}Rim center 3D: ({rim_center_x:.1f}, {rim_center_y:.1f}), Center Z: {center_depth:.2f}mm")
-        print(f"{cup_prefix}Table Z: {table_depth:.2f}mm, Diff: {depth_diff:.2f}mm -> {'EMPTY' if is_empty else 'FULL'}")
         
         return (is_empty, rim_info["center_xy"], rim_info["rim_points"])
     
@@ -209,14 +200,6 @@ def is_cup_empty(point_map: np.ndarray, bbox: List[float], table_depth: float,
     center_z = float(np.median(valid_depths))
     center_z = point_map[center_xy[1], center_xy[0], 2]
     depth_diff = abs(center_z - table_depth)
-    # print(f"Cup #{cup_id}: Fallback center Z: {center_z:.2f}mm, Table Z: {table_depth:.2f}mm, Diff: {depth_diff:.2f}mm")
-    
-    # Return with center coordinates (no rim points for fallback)
-    
-    # Report fallback center pixel and XYZ
-    center_xyz = point_map[center_xy[1], center_xy[0], :]
-    cup_prefix = f"Cup #{cup_id}: " if cup_id > 0 else ""
-    # print(f"{cup_prefix}Fallback center pixel: ({center_xy[0]}, {center_xy[1]}), XYZ: ({center_xyz[0]:.2f}, {center_xyz[1]:.2f}, {center_xyz[2]:.2f}) mm")
     
     return (depth_diff < empty_threshold, center_xy, None)
 

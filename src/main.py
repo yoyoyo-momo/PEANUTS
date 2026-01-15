@@ -20,53 +20,6 @@ from check_empty import check_multiple_cups
 from Server import TCPServer
 
 
-def transform_bbox_to_pointmap(bbox, color_image, point_map):
-    """Transform bbox from color image to point map coordinates."""
-    color_h, color_w = color_image.shape[:2]
-    point_h, point_w = point_map.shape[:2]
-    
-    x1, y1, x2, y2 = bbox
-    
-    return [x1, y1, x2, y2]
-
-    # Calculate offset to center point map in color image
-    offset_x = (color_w - point_w) / 2
-    offset_y = (color_h - point_h) / 2
-    
-    # Transform coordinates
-    x1_pm = x1 - offset_x
-    y1_pm = y1 - offset_y
-    x2_pm = x2 - offset_x
-    y2_pm = y2 - offset_y
-    
-    return [x1_pm, y1_pm, x2_pm, y2_pm]
-
-
-def download_point_map(stereo_serial: str):
-    """Download point map from NxLib."""
-    root = NxLibItem()
-    pm_item = root[ITM_IMAGES][ITM_POINT_MAP]
-    
-    with NxLibCommand(CMD_DOWNLOAD_IMAGES) as cmd:
-        cmd.parameters()[ITM_CAMERAS].set_json(f'["{stereo_serial}"]')
-        cmd.parameters()[ITM_IMAGES].set_json(f'["{ITM_POINT_MAP}"]')
-        cmd.execute()
-    
-    width = pm_item[ITM_WIDTH].as_int()
-    height = pm_item[ITM_HEIGHT].as_int()
-    data = pm_item[ITM_DATA].as_binary()
-    arr = np.frombuffer(data, dtype=np.float32)
-    
-    if arr.size != width * height * 3:
-        raise RuntimeError("Point map size mismatch")
-    
-    return arr.reshape(height, width, 3)
-
-def reshape_point_map(point_map):
-    """ Reshape the point map array from (m x n x 3) to ((m*n) x 3). """
-    return point_map.reshape(
-        (point_map.shape[0] * point_map.shape[1]), point_map.shape[2])
-
 def capture(stereo_serial, color_serial):
     """Capture color image and point map."""
     # Capture from both cameras
@@ -74,26 +27,118 @@ def capture(stereo_serial, color_serial):
         cmd.parameters()[ITM_CAMERAS].set_json(f'["{stereo_serial}", "{color_serial}"]')
         cmd.execute()
     
-    # Get color image via temp file
+    # Get color image raw
     root = NxLibItem()
     color_raw = root[ITM_CAMERAS][color_serial][ITM_IMAGES][ITM_RAW]
-    # with NxLibCommand(CMD_SAVE_IMAGE) as cmd:
-    #     cmd.parameters()[ITM_NODE] = color_raw.path
-    #     cmd.parameters()[ITM_FILENAME] = "temp_color.png"
-    #     cmd.execute()
     color_image = color_raw.get_binary_data()
-    # print(color_image.shape)
     
     # Compute point map
     
     NxLibCommand(CMD_RECTIFY_IMAGES).execute()
     NxLibCommand(CMD_COMPUTE_DISPARITY_MAP).execute()
     NxLibCommand(CMD_COMPUTE_POINT_MAP).execute()
-    # NxLibCommand(CMD_RENDER_POINT_MAP).execute()
-    point_map = root[ITM_CAMERAS][stereo_serial][ITM_IMAGES][ITM_POINT_MAP]
-    point_map_data = point_map.get_binary_data()
+    with NxLibCommand(CMD_RENDER_POINT_MAP) as cmd:
+        cmd.parameters()[ITM_CAMERA] = f"{color_serial}"
+        cmd.execute()
+        point_map = cmd.result()[ITM_IMAGES][ITM_RENDER_POINT_MAP].get_binary_data()
 
-    return color_image, point_map_data
+    return color_image, point_map
+
+
+def handle_depth_method(color_image, point_map, cup_detections, args, server):
+    """Handle depth-based empty cup detection."""
+    bboxes_pm = [bbox for bbox, _, _ in cup_detections]
+    display_image = color_image.copy()
+    
+    if len(bboxes_pm) > 0:
+        # Check if cups are empty
+        empty_results = check_multiple_cups(point_map, bboxes_pm, args.table_depth, args.empty_threshold)
+        
+        # Track if any cup is empty
+        any_cup_empty = False
+        
+        for cup_id, ((bbox, cls_id, conf), (is_empty, center_pm, rim_pm)) in enumerate(zip(cup_detections, empty_results), 1):
+            x1, y1, x2, y2 = map(int, bbox)
+            
+            # Determine color and label
+            if is_empty:
+                any_cup_empty = True
+                color = (0, 0, 255)  # Red for empty
+                label = f"Cup #{cup_id} EMPTY"
+            elif is_empty is False:
+                color = (0, 255, 0)  # Green for not empty
+                label = f"Cup #{cup_id} NOT EMPTY"
+            else:
+                color = (0, 255, 255)  # Yellow for unknown
+                label = f"Cup #{cup_id} UNKNOWN"
+            
+            # Draw bbox
+            cv2.rectangle(display_image, (x1, y1), (x2, y2), color, 2)
+            
+            # Draw rim points
+            if rim_pm is not None:
+                for px, py in rim_pm:
+                    cv2.circle(display_image, (px, py), 2, (255, 255, 0), -1)  # Cyan dots for rim
+            
+            # Draw rim center point
+            if center_pm is not None:
+                cv2.circle(display_image, (center_pm[0], center_pm[1]), 5, (255, 0, 255), -1)  # Magenta circle
+                cv2.circle(display_image, (center_pm[0], center_pm[1]), 7, (255, 255, 255), 2)  # White outline
+            
+            # Draw label
+            label_text = f"{label} ({conf:.2f})"
+            (text_w, text_h), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            cv2.rectangle(display_image, (x1, y1 - text_h - 10), (x1 + text_w, y1), color, -1)
+            cv2.putText(display_image, label_text, (x1, y1 - 5), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # Send message based on results
+        if any_cup_empty:
+            server.send_empty()
+        else:
+            server.send_not_empty()
+    else:
+        # No cups detected
+        print("No cups detected")
+        server.send_empty()
+    
+    return display_image
+
+
+def handle_yolo_method(color_image, cup_detections, server):
+    """Handle YOLO-based empty cup detection."""
+    display_image = color_image.copy()
+    
+    for cup_id, (bbox, cls_id, conf) in enumerate(cup_detections, 1):
+        x1, y1, x2, y2 = map(int, bbox)
+        
+        # Determine color and label
+        if cls_id == 0:
+            color = (0, 0, 255)  # Red for YOLO empty
+            label = f"Cup #{cup_id} Empty"
+        elif cls_id == 1:
+            color = (0, 255, 0)  # Green for YOLO not empty
+            label = f"Cup #{cup_id} not Empty"
+        elif cls_id == 2:
+            color = (255, 255, 0)  # Cyan for YOLO unknown
+            label = f"Cup #{cup_id} Unknown"
+        elif cls_id == 3:
+            color = (255, 0, 0)  # Blue for YOLO Small cup
+            label = f"Cup #{cup_id} Small"
+        
+        # Draw bbox
+        cv2.rectangle(display_image, (x1, y1), (x2, y2), color, 2)
+        
+        # Draw label
+        label_text = f"{label} ({conf:.2f})"
+        (text_w, text_h), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        cv2.rectangle(display_image, (x1, y1 - text_h - 10), (x1 + text_w, y1), color, -1)
+        cv2.putText(display_image, label_text, (x1, y1 - 5), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    
+    server.send_not_empty()
+    
+    return display_image
 
 
 def main():
@@ -103,7 +148,7 @@ def main():
     parser.add_argument("--model", required=True, help="YOLO model path")
     parser.add_argument("--conf", type=float, default=0.6, help="YOLO confidence threshold")
     parser.add_argument("--table-depth", type=float, default=1500, help="Z coordinate of table surface (mm)")
-    parser.add_argument("--empty-threshold", type=float, default=20.0, help="Max distance from table to consider empty (mm)")
+    parser.add_argument("--empty-threshold", type=float, default=50.0, help="Max distance from table to consider empty (mm)")
     parser.add_argument("--interval", type=float, default=0.0, help="Interval between frames")
     parser.add_argument("--max-frames", type=int, default=0, help="Max frames (0=unlimited)")
     parser.add_argument("--device", type=str, default="0")
@@ -157,128 +202,23 @@ def main():
                         print(f"Detection failed: {e}")
                         break
 
+                    # Process based on method
+                    elapsed = time.time() - loop_start
+                    fps = 1.0 / elapsed if elapsed > 0 else 0
+                    
                     if args.method == "depth":
-                        bboxes_pm = [bbox for bbox, _, _ in cup_detections]
-                        x1, y1, x2, y2 = map(int, bboxes_pm[0])
-                        
-                        # Check if cups are empty (returns list of (is_empty, center_xy) tuples)
-                        empty_results = check_multiple_cups(point_map, bboxes_pm, args.table_depth, args.empty_threshold)
-                        
-                        # Draw results on image
-                        elapsed = time.time() - loop_start
-                        fps = 1.0 / elapsed if elapsed > 0 else 0
-                        
-                        display_image = color_image.copy()
-                        
-                        for cup_id, ((bbox, cls_id, conf), (is_empty, center_pm, rim_pm)) in enumerate(zip(cup_detections, empty_results), 1):
-                            x1, y1, x2, y2 = map(int, bbox)
-                            
-                            # Determine color and label
-                            if is_empty:
-                                # server.send_empty()
-                                color = (0, 0, 255)  # Red for empty
-                                label = f"Cup #{cup_id} EMPTY"
-                            elif is_empty is False:
-                                # server.send_not_empty()
-                                color = (0, 255, 0)  # Green for not empty
-                                label = f"Cup #{cup_id} NOT EMPTY"
-                            else:
-                                color = (0, 255, 255)  # Yellow for unknown
-                                label = f"Cup #{cup_id} UNKNOWN"
-                            
-                            # server.send_not_empty()
-                            server.send_empty()
-
-                        #     # Draw bbox
-                            cv2.rectangle(display_image, (x1, y1), (x2, y2), color, 2)
-                            
-                            # Draw rim points
-                            if rim_pm is not None:
-                                for px, py in rim_pm:
-                                    cv2.circle(display_image, (px, py), 2, (255, 255, 0), -1)  # Cyan dots for rim
-                            
-                            # Draw rim center point
-                            if center_pm is not None:
-                                cv2.circle(display_image, (center_pm[0], center_pm[1]), 5, (255, 0, 255), -1)  # Magenta circle
-                                cv2.circle(display_image, (center_pm[0], center_pm[1]), 7, (255, 255, 255), 2)  # White outline
-                            
-                            # Draw label
-                            label_text = f"{label} ({conf:.2f})"
-                            (text_w, text_h), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                            cv2.rectangle(display_image, (x1, y1 - text_h - 10), (x1 + text_w, y1), color, -1)
-                            cv2.putText(display_image, label_text, (x1, y1 - 5), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                        display_image = handle_depth_method(color_image, point_map, cup_detections, args, server)
                     elif args.method == "yolo":
-                        elapsed = time.time() - loop_start
-                        fps = 1.0 / elapsed if elapsed > 0 else 0
-                        display_image = color_image.copy()
-
-                        for cup_id, (bbox, cls_id, conf) in enumerate(cup_detections, 1):
-                            x1, y1, x2, y2 = map(int, bbox)
-
-                            # Determine color and label
-                            if cls_id == 0:
-                                color = (0, 0, 255)  # Red for YOLO empty
-                                label = f"Cup #{cup_id} Empty"
-                            elif cls_id == 1:
-                                color = (0, 255, 0)  # Green for YOLO not empty
-                                label = f"Cup #{cup_id} not Empty"
-                            elif cls_id == 2:
-                                color = (255, 255, 0)  # Cyan for YOLO unknown
-                                label = f"Cup #{cup_id} Unknown"
-                            elif cls_id == 3:
-                                color = (255, 0, 0)  # Blue for YOLO Small cup
-                                label = f"Cup #{cup_id} Small"
-                            
-                            # Draw bbox
-                            cv2.rectangle(display_image, (x1, y1), (x2, y2), color, 2)
-                            
-                            # Draw label
-                            label_text = f"{label} ({conf:.2f})"
-                            (text_w, text_h), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                            cv2.rectangle(display_image, (x1, y1 - text_h - 10), (x1 + text_w, y1), color, -1)
-                            cv2.putText(display_image, label_text, (x1, y1 - 5), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                            
-                        cls_ids = [cls_id for _, cls_id, _ in cup_detections]
-                        print(cls_ids)
-                        # if 0 in cls_ids:
-                        #     server.send_empty()
-                        # else:
-                        #     server.send_not_empty()
-                        
-                        server.send_not_empty()
-                        
+                        display_image = handle_yolo_method(color_image, cup_detections, server)
 
                     # Draw FPS
                     fps_text = f"FPS: {fps:.2f} | Cups: {len(cup_detections)}"
                     cv2.putText(display_image, fps_text, (10, 30), 
                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
                     
-                    # Create point map visualization
-                    # pm_viz = point_map[:, :, 2].copy()  # Z channel
-                    # # Normalize for visualization
-                    # pm_valid = pm_viz[~np.isnan(pm_viz) & (pm_viz > 0)]
-                    # if pm_valid.size > 0:
-                    #     pm_min, pm_max = np.percentile(pm_valid, [1, 99])
-                    #     pm_viz = np.clip(pm_viz, pm_min, pm_max)
-                    #     pm_viz = ((pm_viz - pm_min) / (pm_max - pm_min) * 255).astype(np.uint8)
-                    #     pm_viz[np.isnan(point_map[:, :, 2]) | (point_map[:, :, 2] <= 0)] = 0
-                    #     pm_viz = cv2.applyColorMap(pm_viz, cv2.COLORMAP_JET)
-                        
-                    #     # Draw center points on point map view
-                    #     for (is_empty, center_pm, rim_pm) in empty_results:
-                    #         if center_pm is not None:
-                    #             cv2.circle(pm_viz, (center_pm[0], center_pm[1]), 8, (255, 255, 255), -1)
-                    #             cv2.circle(pm_viz, (center_pm[0], center_pm[1]), 10, (0, 0, 0), 2)
-                    # else:
-                    #     pm_viz = np.zeros((point_map.shape[0], point_map.shape[1], 3), dtype=np.uint8)
-                    
-                    # Show both views with resizable windows
+                    # Show detection window
                     cv2.namedWindow("Cup Detection", cv2.WINDOW_NORMAL)
-                    # cv2.namedWindow("Point Map View", cv2.WINDOW_NORMAL)
                     cv2.imshow("Cup Detection", display_image)
-                    # cv2.imshow("Point Map View", pm_viz)
                     
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break

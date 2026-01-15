@@ -12,7 +12,7 @@ import numpy as np
 from ultralytics import YOLO
 
 
-def detect_cups(image: np.ndarray, model_path: str, confidence_threshold: float = 0.5, imgsz: int = 640, device: str = "0") -> List[Tuple[List[float], int, float]]:
+def detect_cups(image: np.ndarray, model: YOLO, confidence_threshold: float = 0.5, imgsz: int = 640, device: str = "0") -> List[Tuple[List[float], int, float]]:
     """
     Detect cups in an image using YOLO.
     
@@ -26,7 +26,6 @@ def detect_cups(image: np.ndarray, model_path: str, confidence_threshold: float 
     Returns:
         List of (bbox, class_id, confidence) where bbox is [x1, y1, x2, y2]
     """
-    model = YOLO(model_path)
     results = model.predict(image, imgsz=imgsz, conf=confidence_threshold, device=device, verbose=False)
     
     detections = []
