@@ -319,7 +319,7 @@ def start_ui(http_host: str = "0.0.0.0", http_port: int = 8080, tcp_server_insta
 
 
 if __name__ == "__main__":
-    server = TCPServer(host="192.168.1.133", port=9000)
+    server = TCPServer(host="192.168.1.133", port=9060)
 
     # 讓 server.start() 在背景 thread 跑，不要卡住主程式
     t = threading.Thread(target=server.start, daemon=True)

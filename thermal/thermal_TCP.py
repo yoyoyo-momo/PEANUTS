@@ -122,7 +122,7 @@ class ThermalClient:
 if __name__ == "__main__":
     # === 使用範例 ===
     #client = ThermalClient("192.168.10.101", 9000)
-    client = ThermalClient("192.168.1.133", 9000)
+    client = ThermalClient("192.168.1.133", 9060)
     client.connect()
     try:
         while client.running:
