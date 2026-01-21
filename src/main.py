@@ -155,7 +155,7 @@ def main():
     parser.add_argument("--method", default="depth", choices=["depth", "yolo"], help="Method for empty checking")
     args = parser.parse_args()
     
-    server = TCPServer(host="192.168.1.133", port=9999)
+    server = TCPServer(host="192.168.1.133", port=9090)
     t = threading.Thread(target=server.start, daemon=True)
     t.start()
 
