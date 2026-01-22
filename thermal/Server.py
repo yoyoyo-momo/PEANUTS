@@ -205,7 +205,8 @@ class TCPServer:
         """
         print(f"temperature: {temperature}")
         temp_hex = hex(int(temperature))
-        base = b'\x88\x66\x71' + bytes.fromhex(temp_hex[2:]) + b'\x00\x00\x00'  # 7 bytes
+        hex_str = temp_hex[2:].zfill(2)
+        base = b'\x88\x66\x71' + bytes.fromhex(hex_str) + b'\x00\x00\x00'  # 7 bytes
         self.check_sum_and_send(base)
         print("")
 
